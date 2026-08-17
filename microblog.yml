@@ -1,13 +1,14 @@
-name: Micro.blog Auto Bot
+name: Micro.blog 24/7 Auto Bot
 
 on:
   schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+    - cron: '0 */5 * * *'  # يعيد التشغيل تلقائياً كل 5 ساعات
+  workflow_dispatch:        # يتيح التشغيل اليدوي بأي وقت
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
 
     steps:
       - name: Checkout Repository
@@ -22,7 +23,7 @@ jobs:
         run: |
           pip install requests
 
-      - name: Run Micro.blog Bot
+      - name: Run Micro.blog Bot (Continuous Mode)
         env:
           MICRO_TOKEN: ${{ secrets.MICRO_TOKEN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
