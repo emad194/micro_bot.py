@@ -3,12 +3,17 @@ import re
 import random
 import time
 import requests
+import sys
+
+# تفعيل طباعة السجلات فوراً
+sys.stdout.reconfigure(line_buffering=True)
 
 # ==================== الإعدادات والمفاتيح ====================
 MICRO_TOKEN = os.getenv("MICRO_TOKEN", "").strip()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 
-MAX_REPLIES_PER_RUN = 10
+MAX_REPLIES_PER_BATCH = 10
+SLEEP_BETWEEN_BATCHES = 300  # انتظار 5 دقائق بين كل دفعة والأخرى
 
 DYNAMIC_CLOSINGS = [
     "🕊️ Documenting our family's daily reality in Gaza on my profile link if you'd like to check it out.",
@@ -81,12 +86,8 @@ def generate_ai_reply(prompt_text):
         print(f"[!] Error calling DeepSeek API: {e}")
     return None
 
-def run():
-    if not MICRO_TOKEN or not DEEPSEEK_API_KEY:
-        print("[!] Missing secrets in GitHub.")
-        return
-
-    print("[*] Fetching Discover timeline from Micro.blog...")
+def run_single_batch(replied_ids, replied_authors):
+    print("\n[*] Fetching Discover timeline from Micro.blog...")
     headers = {"Authorization": f"Bearer {MICRO_TOKEN}"}
     
     try:
@@ -95,26 +96,30 @@ def run():
         posts = res.json().get("items", [])
     except Exception as e:
         print(f"[!] Error fetching timeline: {e}")
-        return
+        return 0
 
     replies_count = 0
     
     for post in posts:
-        if replies_count >= MAX_REPLIES_PER_RUN:
+        if replies_count >= MAX_REPLIES_PER_BATCH:
             break
         
-        post_id = post.get("id")
+        post_id = str(post.get("id", ""))
         author_info = post.get("author", {})
-        author_username = author_info.get("_microblog", {}).get("username", "")
+        author_username = author_info.get("_microblog", {}).get("username", "").lower()
         
         if not author_username:
+            continue
+        
+        # منع التكرار لنفس المنشور أو الشخص داخل الجلسة
+        if post_id in replied_ids or author_username in replied_authors:
             continue
         
         html_content = post.get("content_html", "")
         clean_text = strip_html(html_content)
 
         if len(clean_text) < 15: continue
-        if not is_clean_english(clean_content := clean_text): continue
+        if not is_clean_english(clean_text): continue
         if contains_video(clean_text) or is_spam(clean_text): continue
 
         print(f"[*] Analyzing post by @{author_username}...")
@@ -128,6 +133,9 @@ def run():
                 
                 if reply_res.status_code == 200:
                     replies_count += 1
+                    replied_ids.add(post_id)
+                    replied_authors.add(author_username)
+                    
                     print(f"    [✓] Reply #{replies_count} sent successfully:\n{reply_text}\n")
                     
                     sleep_time = random.randint(15, 25)
@@ -137,7 +145,38 @@ def run():
             except Exception as e:
                 print(f"    [!] Error sending: {e}")
 
-    print(f"[+] Finished run. Total replies sent: {replies_count}")
+    print(f"[+] Batch finished. Sent {replies_count} replies in this round.")
+    return replies_count
+
+def main():
+    if not MICRO_TOKEN or not DEEPSEEK_API_KEY:
+        print("[!] Missing secrets in GitHub.")
+        return
+
+    print("=== Starting 24/7 Continuous Micro.blog Bot ===")
+    
+    replied_ids = set()
+    replied_authors = set()
+    
+    # تنفيذ 60 دورة (كل دورة 5 دقائق = 5 ساعات متواصلة لكل عملية تشغيل)
+    total_cycles = 60
+    current_cycle = 0
+    total_sent = 0
+
+    while current_cycle < total_cycles:
+        current_cycle += 1
+        print(f"\n==========================================")
+        print(f"[*] Starting Cycle {current_cycle}/{total_cycles} (Total Lifetime Sent: {total_sent})")
+        print(f"==========================================")
+        
+        sent = run_single_batch(replied_ids, replied_authors)
+        total_sent += sent
+        
+        if current_cycle < total_cycles:
+            print(f"[*] Waiting {SLEEP_BETWEEN_BATCHES} seconds (5 mins) before next batch of latest posts...")
+            time.sleep(SLEEP_BETWEEN_BATCHES)
+
+    print("[✓] 5-hour continuous run completed. Ready for next scheduled trigger.")
 
 if __name__ == "__main__":
-    run()
+    main()
