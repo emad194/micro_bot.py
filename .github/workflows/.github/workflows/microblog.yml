@@ -1,14 +1,14 @@
-name: Micro.blog 24/7 Auto Bot
+name: Nostr 24/7 Zap Reach Bot
 
 on:
   schedule:
-    - cron: '0 */5 * * *'  # يعيد التشغيل تلقائياً كل 5 ساعات
-  workflow_dispatch:        # يتيح التشغيل اليدوي بأي وقت
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 320
 
     steps:
       - name: Checkout Repository
@@ -21,11 +21,11 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install requests
+          pip install requests nostr-sdk websockets
 
-      - name: Run Micro.blog Bot (Continuous Mode)
+      - name: Run Nostr Zap Bot
         env:
-          MICRO_TOKEN: ${{ secrets.MICRO_TOKEN }}
+          NOSTR_NSEC: ${{ secrets.NOSTR_NSEC }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           python micro_bot.py
