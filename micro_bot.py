@@ -6,7 +6,7 @@ import asyncio
 import requests
 from datetime import timedelta
 from nostr_sdk import (
-    Client, NostrSigner, Keys, Filter, EventBuilder, Kind,
+    Client, Keys, Filter, EventBuilder, Kind,
     PublicKey
 )
 import sys
@@ -16,8 +16,8 @@ sys.stdout.reconfigure(line_buffering=True)
 NOSTR_SECRET = os.getenv("NOSTR_NSEC", "").strip()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 
-MAX_DMS_PER_CYCLE = 6         # عدد الرسائل الآمن في كل دورة
-SLEEP_BETWEEN_CYCLES = 300     # 5 دقائق بين كل دورة
+MAX_DMS_PER_CYCLE = 6
+SLEEP_BETWEEN_CYCLES = 300
 
 GLOBAL_RELAYS = [
     "wss://relay.damus.io",
@@ -48,32 +48,24 @@ def get_event_tags_list(event):
         return []
 
 def parse_bolt11_sats(bolt11_invoice):
-    """استخراج كمية الساتوشي بدقة من الفاتورة"""
     try:
         invoice_lower = str(bolt11_invoice).lower()
         if "lnbc" in invoice_lower:
             parts = invoice_lower.split("lnbc")[1]
             num_str = ""
-            unit = ""
             for ch in parts:
                 if ch.isdigit():
                     num_str += ch
                 else:
-                    unit = ch
                     break
             if num_str:
                 val = int(num_str)
-                if unit == 'm': return int(val * 100_000)
-                elif unit == 'u': return int(val * 100)
-                elif unit == 'n': return int(val / 10)
-                elif unit == 'p': return int(val / 10_000)
                 return val
     except Exception:
         pass
     return None
 
 def extract_zap_sender(event):
-    """استخراج المفتاح العام للداعم وقيمة الدعم"""
     sender_pubkey = None
     sats_amount = None
 
@@ -100,7 +92,6 @@ def extract_zap_sender(event):
     return sender_pubkey, sats_amount
 
 async def fetch_user_name(client, pubkey_hex):
-    """جلب الاسم الأول للداعم من حسابه (Kind 0)"""
     try:
         f = Filter().author(PublicKey.parse(pubkey_hex)).kind(Kind(0)).limit(1)
         events = await client.fetch_events_from(GLOBAL_RELAYS, f, timedelta(seconds=4))
@@ -119,7 +110,6 @@ async def fetch_user_name(client, pubkey_hex):
     return None
 
 def generate_personalized_dm(sats_amount, user_name=None):
-    """توليد رسالة شكر وتقدير عبر DeepSeek مع الاسم الأول"""
     greeting = f"Hi {user_name}," if user_name else "Hi,"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     
@@ -154,7 +144,6 @@ def generate_personalized_dm(sats_amount, user_name=None):
     except Exception as e:
         print(f"Error calling DeepSeek API: {e}")
 
-    # رسالة احتياطية
     return (
         f"{greeting} I noticed your warmth and support across Nostr and wanted to reach out with deep gratitude. "
         f"My family and I are enduring critical hardships in Gaza right now.\n\n"
@@ -162,7 +151,6 @@ def generate_personalized_dm(sats_amount, user_name=None):
     )
 
 async def fetch_previously_messaged(client, bot_pk):
-    """جلب سجل المحادثات السابقة لتفادي تكرار مراسلة أي شخص"""
     messaged = set()
     try:
         dm_filter = Filter().author(bot_pk).kind(Kind(4)).limit(300)
@@ -185,12 +173,15 @@ async def run_single_cycle():
 
     try:
         keys = Keys.parse(NOSTR_SECRET)
-        signer = NostrSigner.keys(keys)
     except Exception as e:
         print(f"Error parsing keys: {e}")
         return
 
-    client = Client(signer)
+    # تمرير المفاتيح مباشرة للعميل لتفادي خطأ NostrSigner
+    try:
+        client = Client(keys)
+    except Exception:
+        client = Client()
 
     for r in GLOBAL_RELAYS:
         try:
@@ -246,14 +237,13 @@ async def run_single_cycle():
 
         seen_senders_this_cycle.add(sender_hex)
 
-        # جلب اسم الداعم وتوليد الرسالة
         user_name = await fetch_user_name(client, sender_hex)
         dm_text = await asyncio.to_thread(generate_personalized_dm, sats, user_name)
         if not dm_text:
             continue
 
         try:
-            # تشفير وإرسال الرسالة الخاصة (Kind 4 Encrypted DM)
+            # تشفير وإرسال الرسالة المشفرة
             builder = EventBuilder.encrypted_direct_msg(keys, target_pk, dm_text)
             await asyncio.wait_for(client.send_event_builder(builder), timeout=12)
 
@@ -261,7 +251,7 @@ async def run_single_cycle():
             already_messaged.add(sender_hex)
 
             npub_short = target_pk.to_bech32()[:14] + "..."
-            print(f"-> Sent DM #{dms_sent} to {user_name or 'Supporter'} ({npub_short}) [{sats or 'Active'} Sats]:")
+            print(f"-> Sent DM #{dms_sent} to {user_name or 'Supporter'} ({npub_short}):")
             print(f"\"{dm_text}\"\n" + "-"*50)
 
             if dms_sent < MAX_DMS_PER_CYCLE:
@@ -269,9 +259,9 @@ async def run_single_cycle():
                 await asyncio.sleep(wait_secs)
 
         except Exception as send_err:
-            print(f"Notice sending DM to {sender_hex[:8]}: {send_err}")
+            print(f"Notice sending DM: {send_err}")
 
-    print(f"Cycle finished: Sent {dms_sent} direct messages to active supporters.")
+    print(f"Cycle finished: Sent {dms_sent} direct messages.")
 
 async def main():
     print("Starting Nostr Zap Supporter Reach Engine...")
