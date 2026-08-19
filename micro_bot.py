@@ -98,23 +98,24 @@ def generate_personalized_dm(sats_amount, user_name=None):
     greeting = f"Hi {user_name}," if user_name else "Hi,"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     
-    amount_hint = f"They recently sent a zap of {sats_amount} sats." if sats_amount else "They are active in supporting creators with zaps on Nostr."
+    amount_hint = f"They are an active, generous supporter who frequently zaps community creators on Nostr (seen zapping around {sats_amount} sats)." if sats_amount else "They are active in supporting community creators with zaps on Nostr."
     
     system_instruction = (
-        "You are an authentic person surviving the hardships in Gaza, sending a warm, respectful direct message to a supporter on Nostr.\n\n"
+        "You are an authentic person surviving the hardships in Gaza, sending a warm, respectful direct message to a generous supporter on Nostr.\n\n"
         "TASK:\n"
-        "Write exactly ONE or TWO sincere sentences thanking them for their active warmth/support across Nostr and introducing your family's reality with dignity.\n\n"
+        "Write exactly ONE sincere, natural sentence recognizing their generous spirit and active support/zaps across the Nostr community, and introducing your family's reality in Gaza with quiet dignity.\n\n"
         "RULES:\n"
-        "1. Do NOT include greetings (like Hi, Hello) or closings/links (they are handled automatically).\n"
-        "2. Sound completely human, humble, and authentic.\n"
-        "3. Write in clean, fluent English."
+        "1. Do NOT claim or imply they sent a zap to you directly (they zapped creators across Nostr). Appreciate their general warmth/generosity on the platform.\n"
+        "2. Do NOT include greetings (like Hi, Hello) or closings/links (they are handled automatically).\n"
+        "3. Sound completely human, humble, and authentic.\n"
+        "4. Write in clean, fluent English."
     )
 
     payload = {
         "model": "deepseek-chat",
         "messages": [
             {"role": "system", "content": system_instruction},
-            {"role": "user", "content": f"Context: {amount_hint}. Write the 2 sentences."}
+            {"role": "user", "content": f"Context: {amount_hint}. Write the single sentence."}
         ],
         "temperature": 0.8
     }
@@ -130,7 +131,7 @@ def generate_personalized_dm(sats_amount, user_name=None):
         print(f"Error calling DeepSeek API: {e}")
 
     return (
-        f"{greeting} I noticed your warmth and support across Nostr and wanted to reach out with deep gratitude. "
+        f"{greeting} Seeing your generous warmth and active support across Nostr brings genuine hope. "
         f"My family and I are enduring critical hardships in Gaza right now.\n\n"
         f"{random.choice(DYNAMIC_CLOSINGS)}"
     )
@@ -177,7 +178,6 @@ def create_and_sign_event(keys, kind, content, tags):
     
     event_id = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
     
-    # توقيع الـ hash بواسطة المفتاح الخاص
     try:
         sig = keys.sign_schnorr(bytes.fromhex(event_id))
     except Exception:
@@ -253,15 +253,12 @@ async def run_single_cycle():
             continue
 
         try:
-            # 1. تشفير الرسالة NIP-04
             secret_key = keys.secret_key()
             encrypted_payload = nip04_encrypt(secret_key, target_pk, dm_text)
             
-            # 2. بناء وتوقيع الحدث مباشرة وبدقة
             tags = [["p", target_pk.to_hex()]]
             signed_event_dict = create_and_sign_event(keys, 4, encrypted_payload, tags)
 
-            # 3. بث الحدث للريليهات
             await broadcast_signed_event_ws(signed_event_dict)
 
             dms_sent += 1
