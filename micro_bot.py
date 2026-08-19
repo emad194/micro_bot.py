@@ -15,8 +15,12 @@ sys.stdout.reconfigure(line_buffering=True)
 NOSTR_SECRET = os.getenv("NOSTR_NSEC", "").strip()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 
-MAX_REPLIES_PER_CYCLE = 6
-SLEEP_BETWEEN_CYCLES = 300
+MAX_REPLIES_PER_CYCLE = 10
+SLEEP_BETWEEN_CYCLES = 180
+
+# سجل تراكمي دائم لا يُمسح بين الدورات لمنع تكرار أي شخص أو أي منشور نهائياً
+GLOBAL_SEEN_SENDERS = set()
+GLOBAL_REPLIED_EVENTS = set()
 
 GLOBAL_RELAYS = [
     "wss://relay.damus.io",
@@ -78,16 +82,29 @@ def extract_zap_data(event_data):
 
     return sender_pubkey, target_event_id, sats_amount
 
+def is_valid_human_name(raw_name):
+    if not raw_name:
+        return False
+    clean = re.sub(r'[^a-zA-Z]', '', raw_name).strip()
+    if len(clean) < 3 or len(clean) > 15:
+        return False
+    if clean.isupper():
+        return False
+    project_keywords = ["bot", "house", "media", "relay", "shop", "news", "app", "team", "club", "hub", "node", "pay"]
+    if any(kw in clean.lower() for kw in project_keywords):
+        return False
+    return True
+
 async def fetch_user_meta_ws(pubkey_hex):
     name = None
     last_post_id = None
     for relay in GLOBAL_RELAYS[:3]:
         try:
-            async with websockets.connect(relay, ping_interval=10, ping_timeout=10) as ws:
+            async with websockets.connect(relay, ping_interval=5, ping_timeout=5) as ws:
                 req_profile = json.dumps(["REQ", "meta", {"authors": [pubkey_hex], "kinds": [0, 1], "limit": 4}])
                 await ws.send(req_profile)
-                for _ in range(8):
-                    resp = await asyncio.wait_for(ws.recv(), timeout=3)
+                for _ in range(6):
+                    resp = await asyncio.wait_for(ws.recv(), timeout=1.8)
                     data = json.loads(resp)
                     if data[0] == "EVENT" and len(data) >= 3:
                         ev = data[2]
@@ -97,7 +114,9 @@ async def fetch_user_meta_ws(pubkey_hex):
                             if name_val and len(name_val.strip()) > 0:
                                 clean = re.sub(r'[^\w\s]', '', name_val).strip()
                                 if clean:
-                                    name = clean.split()[0]
+                                    first_word = clean.split()[0]
+                                    if is_valid_human_name(first_word):
+                                        name = first_word.capitalize()
                         elif ev.get("kind") == 1 and not last_post_id:
                             last_post_id = ev.get("id")
                     elif data[0] == "EOSE":
@@ -135,7 +154,7 @@ def generate_personalized_reply(sats_amount, user_name=None):
     }
 
     try:
-        response = requests.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=15)
+        response = requests.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=10)
         if response.status_code == 200:
             res_text = response.json()["choices"][0]["message"]["content"].strip().replace('"', '')
             if len(res_text) > 15:
@@ -155,12 +174,12 @@ async def fetch_recent_zaps_ws():
     seen_ids = set()
     for relay in GLOBAL_RELAYS[:5]:
         try:
-            async with websockets.connect(relay, ping_interval=10, ping_timeout=10) as ws:
+            async with websockets.connect(relay, ping_interval=5, ping_timeout=5) as ws:
                 req = json.dumps(["REQ", "zaps_sub", {"kinds": [9735], "limit": 60}])
                 await ws.send(req)
-                for _ in range(60):
+                for _ in range(50):
                     try:
-                        resp = await asyncio.wait_for(ws.recv(), timeout=2.5)
+                        resp = await asyncio.wait_for(ws.recv(), timeout=1.5)
                         data = json.loads(resp)
                         if data[0] == "EVENT" and len(data) >= 3:
                             ev = data[2]
@@ -212,7 +231,7 @@ async def broadcast_signed_event_ws(event_dict):
     msg = json.dumps(["EVENT", event_dict])
     for relay in GLOBAL_RELAYS:
         try:
-            async with websockets.connect(relay, ping_interval=4, ping_timeout=4) as ws:
+            async with websockets.connect(relay, ping_interval=3, ping_timeout=3) as ws:
                 await ws.send(msg)
         except Exception:
             pass
@@ -239,7 +258,6 @@ async def run_single_cycle():
         return
 
     replies_sent = 0
-    seen_senders = set()
 
     for ev in events:
         if replies_sent >= MAX_REPLIES_PER_CYCLE:
@@ -250,22 +268,24 @@ async def run_single_cycle():
             continue
 
         sender_hex = sender_hex.lower()
-        if sender_hex == bot_hex or sender_hex in seen_senders:
+        # تخطي الحساب إذا كان حساب البوت أو تم الرد عليه مسبقاً
+        if sender_hex == bot_hex or sender_hex in GLOBAL_SEEN_SENDERS:
             continue
-
-        seen_senders.add(sender_hex)
 
         user_name, last_post_id = await fetch_user_meta_ws(sender_hex)
-        reply_text = await asyncio.to_thread(generate_personalized_reply, sats, user_name)
-        if not reply_text:
-            continue
-
         event_to_reply = target_event_id or last_post_id
         if not event_to_reply:
             continue
 
+        # تخطي المنشور إذا تم الرد عليه من قبل لمنع تكرار الردود في نفس الثريد
+        if event_to_reply in GLOBAL_REPLIED_EVENTS:
+            continue
+
+        reply_text = await asyncio.to_thread(generate_personalized_reply, sats, user_name)
+        if not reply_text:
+            continue
+
         try:
-            # وسم الرد الرسمي الكامل NIP-10
             tags = [
                 ["e", event_to_reply, "", "root"],
                 ["e", event_to_reply, "", "reply"],
@@ -275,35 +295,37 @@ async def run_single_cycle():
             signed_event = create_and_sign_raw_event(keys, 1, reply_text, tags)
             await broadcast_signed_event_ws(signed_event)
 
+            # تسجيل الشخص والمنشور في السجل التراكمي الدائم لمنع التكرار نهائياً
+            GLOBAL_SEEN_SENDERS.add(sender_hex)
+            GLOBAL_REPLIED_EVENTS.add(event_to_reply)
+
             replies_sent += 1
             print(f"-> Published Public Reply #{replies_sent} to {user_name or 'Supporter'} [{sats or 'Active'} Sats]:")
             print(f"\"{reply_text}\"\n" + "-"*50)
 
             if replies_sent < MAX_REPLIES_PER_CYCLE:
-                wait_secs = random.randint(8, 15)
+                wait_secs = random.randint(3, 6)
                 await asyncio.sleep(wait_secs)
 
         except Exception as send_err:
             print(f"Notice publishing reply: {send_err}")
 
-    print(f"Cycle finished: Published {replies_sent} public replies across all relays.")
+    print(f"Cycle finished: Published {replies_sent} unique public replies.")
 
 async def main():
-    print("Starting Nostr Targeted Public Reply Engine...")
-    max_cycles = 60
-    current_cycle = 0
+    print("Starting Nostr Targeted Public Reply Engine (Anti-Duplicate)...")
+    cycle = 0
 
-    while current_cycle < max_cycles:
-        current_cycle += 1
-        print(f"\n--- Starting Cycle {current_cycle}/{max_cycles} ---")
+    while True:
+        cycle += 1
+        print(f"\n--- Starting Cycle #{cycle} ---")
         try:
             await run_single_cycle()
         except Exception as e:
             print(f"Error in cycle execution: {e}")
 
-        if current_cycle < max_cycles:
-            print(f"Waiting 5 minutes ({SLEEP_BETWEEN_CYCLES}s) before next scan...")
-            await asyncio.sleep(SLEEP_BETWEEN_CYCLES)
+        print(f"Waiting 3 minutes ({SLEEP_BETWEEN_CYCLES}s) before next scan...")
+        await asyncio.sleep(SLEEP_BETWEEN_CYCLES)
 
 if __name__ == "__main__":
     asyncio.run(main())
