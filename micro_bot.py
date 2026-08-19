@@ -71,7 +71,6 @@ def extract_zap_sender(event_data):
     return sender_pubkey, sats_amount
 
 async def fetch_user_name_ws(pubkey_hex):
-    """جلب اسم المستخدم مباشرة عبر WebSocket"""
     for relay in GLOBAL_RELAYS[:2]:
         try:
             async with websockets.connect(relay, ping_interval=10, ping_timeout=10) as ws:
@@ -135,7 +134,6 @@ def generate_personalized_dm(sats_amount, user_name=None):
     )
 
 async def fetch_recent_zaps_ws():
-    """جلب أحداث الـ Zaps مباشرة عبر WebSocket"""
     events = []
     seen_ids = set()
     for relay in GLOBAL_RELAYS:
@@ -172,7 +170,8 @@ async def run_single_cycle():
         print(f"Error parsing keys: {e}")
         return
 
-    client = Client(keys)
+    # إنشاء Client بدون معاملات
+    client = Client()
     for r in GLOBAL_RELAYS:
         try:
             await client.add_relay(r)
@@ -220,8 +219,13 @@ async def run_single_cycle():
             continue
 
         try:
+            # بناء وتوقيع الحدث المشفر بالمفاتيح ثم إرساله
             builder = EventBuilder.encrypted_direct_msg(keys, target_pk, dm_text)
-            await asyncio.wait_for(client.send_event_builder(builder), timeout=12)
+            try:
+                event_to_send = builder.to_event(keys)
+                await asyncio.wait_for(client.send_event(event_to_send), timeout=12)
+            except Exception:
+                await asyncio.wait_for(client.send_event_builder(builder), timeout=12)
 
             dms_sent += 1
             npub_short = target_pk.to_bech32()[:14] + "..."
