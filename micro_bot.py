@@ -163,7 +163,6 @@ async def fetch_recent_zaps_ws():
     return events
 
 async def broadcast_signed_event_ws(signed_event_json):
-    """بث الحدث الموقع عبر الـ WebSockets لجميع الريليهات مباشرة"""
     msg = json.dumps(["EVENT", json.loads(signed_event_json)])
     for relay in GLOBAL_RELAYS:
         try:
@@ -221,16 +220,18 @@ async def run_single_cycle():
             continue
 
         try:
-            # 1. تشفير الرسالة NIP-04 بالمفتاح السري
             secret_key = keys.secret_key()
             encrypted_payload = nip04_encrypt(secret_key, target_pk, dm_text)
             
-            # 2. بناء وتوقيع الحدث مباشرة عبر keys
             p_tag = Tag.public_key(target_pk)
             builder = EventBuilder(Kind(4), encrypted_payload).tags([p_tag])
-            signed_event = builder.sign_with_keys(keys)
+            
+            # التوقيع المتوافق مع الإصدار الحديث
+            try:
+                signed_event = builder.sign(keys)
+            except Exception:
+                signed_event = builder.sign_with_keys(keys)
 
-            # 3. بث الحدث الموقع للشبكة مباشرة
             event_json_str = signed_event.as_json()
             await broadcast_signed_event_ws(event_json_str)
 
