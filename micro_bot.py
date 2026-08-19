@@ -7,7 +7,7 @@ import random
 import asyncio
 import requests
 import websockets
-from nostr_sdk import Keys, PublicKey, nip04_encrypt
+from nostr_sdk import Keys, PublicKey
 import sys
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -15,7 +15,7 @@ sys.stdout.reconfigure(line_buffering=True)
 NOSTR_SECRET = os.getenv("NOSTR_NSEC", "").strip()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 
-MAX_DMS_PER_CYCLE = 6
+MAX_REPLIES_PER_CYCLE = 6
 SLEEP_BETWEEN_CYCLES = 300
 
 GLOBAL_RELAYS = [
@@ -51,8 +51,9 @@ def parse_bolt11_sats(bolt11_invoice):
         pass
     return None
 
-def extract_zap_sender(event_data):
+def extract_zap_data(event_data):
     sender_pubkey = None
+    target_event_id = None
     sats_amount = None
 
     for tag in event_data.get("tags", []):
@@ -62,6 +63,8 @@ def extract_zap_sender(event_data):
 
             if key == 'bolt11':
                 sats_amount = parse_bolt11_sats(val)
+            elif key == 'e':
+                target_event_id = val
             elif key == 'description':
                 try:
                     desc_obj = json.loads(val)
@@ -70,7 +73,7 @@ def extract_zap_sender(event_data):
                 except Exception:
                     pass
 
-    return sender_pubkey, sats_amount
+    return sender_pubkey, target_event_id, sats_amount
 
 async def fetch_user_name_ws(pubkey_hex):
     for relay in GLOBAL_RELAYS[:2]:
@@ -94,28 +97,27 @@ async def fetch_user_name_ws(pubkey_hex):
             continue
     return None
 
-def generate_personalized_dm(sats_amount, user_name=None):
+def generate_personalized_reply(sats_amount, user_name=None):
     greeting = f"Hi {user_name}," if user_name else "Hi,"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     
-    amount_hint = f"They are an active, generous supporter who frequently zaps community creators on Nostr (seen zapping around {sats_amount} sats)." if sats_amount else "They are active in supporting community creators with zaps on Nostr."
+    amount_hint = f"They are an active supporter who zaps community creators on Nostr (around {sats_amount} sats)." if sats_amount else "They are active in supporting community creators with zaps on Nostr."
     
     system_instruction = (
-        "You are an authentic person surviving the hardships in Gaza, sending a warm, respectful direct message to a generous supporter on Nostr.\n\n"
+        "You are an authentic person surviving the hardships in Gaza, writing a warm, respectful public reply to a generous supporter on Nostr.\n\n"
         "TASK:\n"
-        "Write exactly ONE sincere, natural sentence recognizing their generous spirit and active support/zaps across the Nostr community, and introducing your family's reality in Gaza with quiet dignity.\n\n"
+        "Write exactly ONE sincere, natural sentence appreciating their generous warmth and active support/zaps across the Nostr community, while gently introducing your family's reality in Gaza.\n\n"
         "RULES:\n"
-        "1. Do NOT claim or imply they sent a zap to you directly (they zapped creators across Nostr). Appreciate their general warmth/generosity on the platform.\n"
-        "2. Do NOT include greetings (like Hi, Hello) or closings/links (they are handled automatically).\n"
-        "3. Sound completely human, humble, and authentic.\n"
-        "4. Write in clean, fluent English."
+        "1. Do NOT imply they zapped you directly.\n"
+        "2. Do NOT include greetings or links/closings (added automatically).\n"
+        "3. Write in fluent, clean English."
     )
 
     payload = {
         "model": "deepseek-chat",
         "messages": [
             {"role": "system", "content": system_instruction},
-            {"role": "user", "content": f"Context: {amount_hint}. Write the single sentence."}
+            {"role": "user", "content": f"Context: {amount_hint}. Write the sentence."}
         ],
         "temperature": 0.8
     }
@@ -163,7 +165,6 @@ async def fetch_recent_zaps_ws():
     return events
 
 def create_and_sign_event(keys, kind, content, tags):
-    """توقيع حدث Nostr وفق المعيار الرسمي NIP-01 مباشرة"""
     pubkey = keys.public_key().to_hex()
     created_at = int(time.time())
     
@@ -225,14 +226,14 @@ async def run_single_cycle():
     if not events:
         return
 
-    dms_sent = 0
+    replies_sent = 0
     seen_senders = set()
 
     for ev in events:
-        if dms_sent >= MAX_DMS_PER_CYCLE:
+        if replies_sent >= MAX_REPLIES_PER_CYCLE:
             break
 
-        sender_hex, sats = extract_zap_sender(ev)
+        sender_hex, target_event_id, sats = extract_zap_data(ev)
         if not sender_hex:
             continue
 
@@ -240,43 +241,39 @@ async def run_single_cycle():
         if sender_hex == bot_hex or sender_hex in seen_senders:
             continue
 
-        try:
-            target_pk = PublicKey.parse(sender_hex)
-        except Exception:
-            continue
-
         seen_senders.add(sender_hex)
 
         user_name = await fetch_user_name_ws(sender_hex)
-        dm_text = await asyncio.to_thread(generate_personalized_dm, sats, user_name)
-        if not dm_text:
+        reply_text = await asyncio.to_thread(generate_personalized_reply, sats, user_name)
+        if not reply_text:
             continue
 
         try:
-            secret_key = keys.secret_key()
-            encrypted_payload = nip04_encrypt(secret_key, target_pk, dm_text)
-            
-            tags = [["p", target_pk.to_hex()]]
-            signed_event_dict = create_and_sign_event(keys, 4, encrypted_payload, tags)
+            # تجهيز التاغات لنشر رد علني (Kind 1)
+            tags = [["p", sender_hex]]
+            if target_event_id:
+                tags.append(["e", target_event_id, "", "root"])
+
+            # توقيع حدث Kind 1 علني
+            signed_event_dict = create_and_sign_event(keys, 1, reply_text, tags)
 
             await broadcast_signed_event_ws(signed_event_dict)
 
-            dms_sent += 1
-            npub_short = target_pk.to_bech32()[:14] + "..."
-            print(f"-> Sent DM #{dms_sent} to {user_name or 'Supporter'} ({npub_short}) [{sats or 'Active'} Sats]:")
-            print(f"\"{dm_text}\"\n" + "-"*50)
+            replies_sent += 1
+            print(f"-> Published Public Reply #{replies_sent} to {user_name or 'Supporter'} [{sats or 'Active'} Sats]:")
+            print(f"\"{reply_text}\"\n" + "-"*50)
 
-            if dms_sent < MAX_DMS_PER_CYCLE:
+            if replies_sent < MAX_REPLIES_PER_CYCLE:
                 wait_secs = random.randint(12, 25)
                 await asyncio.sleep(wait_secs)
 
         except Exception as send_err:
-            print(f"Notice sending DM: {send_err}")
+            print(f"Notice publishing reply: {send_err}")
 
-    print(f"Cycle finished: Sent {dms_sent} direct messages.")
+    print(f"Cycle finished: Published {replies_sent} public replies.")
 
 async def main():
-    print("Starting Nostr Zap Supporter Reach Engine...")
+    print("Starting Nostr Public Reply Engine...")
     max_cycles = 60
     current_cycle = 0
 
