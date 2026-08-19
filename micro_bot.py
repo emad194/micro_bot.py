@@ -6,8 +6,8 @@ import asyncio
 import requests
 import websockets
 from nostr_sdk import (
-    Keys, EventBuilder, PublicKey, Client, Kind, Tag,
-    NostrSigner, nip04_encrypt
+    Keys, EventBuilder, PublicKey, Kind, Tag,
+    nip04_encrypt
 )
 import sys
 
@@ -162,6 +162,16 @@ async def fetch_recent_zaps_ws():
             continue
     return events
 
+async def broadcast_signed_event_ws(signed_event_json):
+    """بث الحدث الموقع عبر الـ WebSockets لجميع الريليهات مباشرة"""
+    msg = json.dumps(["EVENT", json.loads(signed_event_json)])
+    for relay in GLOBAL_RELAYS:
+        try:
+            async with websockets.connect(relay, ping_interval=5, ping_timeout=5) as ws:
+                await ws.send(msg)
+        except Exception:
+            pass
+
 async def run_single_cycle():
     if not NOSTR_SECRET or not DEEPSEEK_API_KEY:
         print("Error: Missing secrets (NOSTR_NSEC or DEEPSEEK_API_KEY).")
@@ -169,20 +179,9 @@ async def run_single_cycle():
 
     try:
         keys = Keys.parse(NOSTR_SECRET)
-        signer = NostrSigner.keys(keys)
     except Exception as e:
         print(f"Error parsing keys: {e}")
         return
-
-    client = Client(signer)
-    for r in GLOBAL_RELAYS:
-        try:
-            await client.add_relay(r)
-        except Exception:
-            pass
-
-    await client.connect()
-    print("Connected to Global Nostr Relays!")
 
     bot_pk = keys.public_key()
     bot_hex = bot_pk.to_hex().lower()
@@ -222,14 +221,18 @@ async def run_single_cycle():
             continue
 
         try:
-            # تشفير وبناء الرسالة المشفرة NIP-04 وإرسالها عبر العميل الموثق
+            # 1. تشفير الرسالة NIP-04 بالمفتاح السري
             secret_key = keys.secret_key()
             encrypted_payload = nip04_encrypt(secret_key, target_pk, dm_text)
             
+            # 2. بناء وتوقيع الحدث مباشرة عبر keys
             p_tag = Tag.public_key(target_pk)
             builder = EventBuilder(Kind(4), encrypted_payload).tags([p_tag])
-            
-            await asyncio.wait_for(client.send_event_builder(builder), timeout=12)
+            signed_event = builder.sign_with_keys(keys)
+
+            # 3. بث الحدث الموقع للشبكة مباشرة
+            event_json_str = signed_event.as_json()
+            await broadcast_signed_event_ws(event_json_str)
 
             dms_sent += 1
             npub_short = target_pk.to_bech32()[:14] + "..."
