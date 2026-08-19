@@ -7,7 +7,7 @@ import requests
 import websockets
 from nostr_sdk import (
     Keys, EventBuilder, PublicKey, Kind, Tag,
-    nip04_encrypt
+    NostrSigner, nip04_encrypt
 )
 import sys
 
@@ -178,9 +178,14 @@ async def run_single_cycle():
 
     try:
         keys = Keys.parse(NOSTR_SECRET)
-    except Exception as e:
-        print(f"Error parsing keys: {e}")
-        return
+        signer = NostrSigner.keys(keys) if hasattr(NostrSigner, "keys") else NostrSigner(keys)
+    except Exception:
+        try:
+            keys = Keys.parse(NOSTR_SECRET)
+            signer = keys
+        except Exception as e:
+            print(f"Error parsing keys: {e}")
+            return
 
     bot_pk = keys.public_key()
     bot_hex = bot_pk.to_hex().lower()
@@ -226,11 +231,14 @@ async def run_single_cycle():
             p_tag = Tag.public_key(target_pk)
             builder = EventBuilder(Kind(4), encrypted_payload).tags([p_tag])
             
-            # التوقيع المتوافق مع الإصدار الحديث
-            try:
-                signed_event = builder.sign(keys)
-            except Exception:
+            # توقيع الحدث عبر signer المعتمد
+            if hasattr(signer, "sign_event_builder"):
+                res = signer.sign_event_builder(builder)
+                signed_event = await res if asyncio.iscoroutine(res) else res
+            elif hasattr(builder, "sign_with_keys"):
                 signed_event = builder.sign_with_keys(keys)
+            else:
+                signed_event = builder.sign(keys)
 
             event_json_str = signed_event.as_json()
             await broadcast_signed_event_ws(event_json_str)
