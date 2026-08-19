@@ -221,12 +221,13 @@ async def run_single_cycle():
             continue
 
         try:
-            # تشفير الرسالة NIP-04 وإرسال حدث Kind 4 المعتمد
+            # تشفير NIP-04 وإرفاق الـ Tag بشكل صحيح
             secret_key = keys.secret_key()
             encrypted_payload = nip04_encrypt(secret_key, target_pk, dm_text)
             
-            p_tag = Tag.parse(["p", target_pk.to_hex()])
-            event = EventBuilder(Kind(4), encrypted_payload, [p_tag]).to_event(keys)
+            p_tag = Tag.public_key(target_pk)
+            builder = EventBuilder(Kind(4), encrypted_payload).tags([p_tag])
+            event = builder.to_event(keys)
             
             await asyncio.wait_for(client.send_event(event), timeout=12)
 
