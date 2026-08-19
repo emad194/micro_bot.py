@@ -1,14 +1,13 @@
 import os
 import re
 import json
+import time
+import hashlib
 import random
 import asyncio
 import requests
 import websockets
-from nostr_sdk import (
-    Keys, EventBuilder, PublicKey, Kind, Tag,
-    NostrSigner, nip04_encrypt
-)
+from nostr_sdk import Keys, PublicKey, nip04_encrypt
 import sys
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -162,8 +161,42 @@ async def fetch_recent_zaps_ws():
             continue
     return events
 
-async def broadcast_signed_event_ws(signed_event_json):
-    msg = json.dumps(["EVENT", json.loads(signed_event_json)])
+def create_and_sign_event(keys, kind, content, tags):
+    """توقيع حدث Nostr وفق المعيار الرسمي NIP-01 مباشرة"""
+    pubkey = keys.public_key().to_hex()
+    created_at = int(time.time())
+    
+    serialized = json.dumps([
+        0,
+        pubkey,
+        created_at,
+        kind,
+        tags,
+        content
+    ], separators=(',', ':'), ensure_ascii=False)
+    
+    event_id = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+    
+    # توقيع الـ hash بواسطة المفتاح الخاص
+    try:
+        sig = keys.sign_schnorr(bytes.fromhex(event_id))
+    except Exception:
+        sig = keys.secret_key().sign_schnorr(bytes.fromhex(event_id))
+
+    sig_hex = sig.to_hex() if hasattr(sig, "to_hex") else str(sig)
+
+    return {
+        "id": event_id,
+        "pubkey": pubkey,
+        "created_at": created_at,
+        "kind": kind,
+        "tags": tags,
+        "content": content,
+        "sig": sig_hex
+    }
+
+async def broadcast_signed_event_ws(event_dict):
+    msg = json.dumps(["EVENT", event_dict])
     for relay in GLOBAL_RELAYS:
         try:
             async with websockets.connect(relay, ping_interval=5, ping_timeout=5) as ws:
@@ -178,14 +211,9 @@ async def run_single_cycle():
 
     try:
         keys = Keys.parse(NOSTR_SECRET)
-        signer = NostrSigner.keys(keys) if hasattr(NostrSigner, "keys") else NostrSigner(keys)
-    except Exception:
-        try:
-            keys = Keys.parse(NOSTR_SECRET)
-            signer = keys
-        except Exception as e:
-            print(f"Error parsing keys: {e}")
-            return
+    except Exception as e:
+        print(f"Error parsing keys: {e}")
+        return
 
     bot_pk = keys.public_key()
     bot_hex = bot_pk.to_hex().lower()
@@ -225,23 +253,16 @@ async def run_single_cycle():
             continue
 
         try:
+            # 1. تشفير الرسالة NIP-04
             secret_key = keys.secret_key()
             encrypted_payload = nip04_encrypt(secret_key, target_pk, dm_text)
             
-            p_tag = Tag.public_key(target_pk)
-            builder = EventBuilder(Kind(4), encrypted_payload).tags([p_tag])
-            
-            # توقيع الحدث عبر signer المعتمد
-            if hasattr(signer, "sign_event_builder"):
-                res = signer.sign_event_builder(builder)
-                signed_event = await res if asyncio.iscoroutine(res) else res
-            elif hasattr(builder, "sign_with_keys"):
-                signed_event = builder.sign_with_keys(keys)
-            else:
-                signed_event = builder.sign(keys)
+            # 2. بناء وتوقيع الحدث مباشرة وبدقة
+            tags = [["p", target_pk.to_hex()]]
+            signed_event_dict = create_and_sign_event(keys, 4, encrypted_payload, tags)
 
-            event_json_str = signed_event.as_json()
-            await broadcast_signed_event_ws(event_json_str)
+            # 3. بث الحدث للريليهات
+            await broadcast_signed_event_ws(signed_event_dict)
 
             dms_sent += 1
             npub_short = target_pk.to_bech32()[:14] + "..."
