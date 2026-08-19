@@ -2,6 +2,7 @@ name: Nostr 24/7 Zap Reach Bot
 
 on:
   schedule:
+    # يعمل تلقائياً كل 5 ساعات بشكل مستمر ودائم 24/7
     - cron: '0 */5 * * *'
   workflow_dispatch:
 
