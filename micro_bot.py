@@ -1,13 +1,13 @@
 import os
 import re
 import json
+import time
+import hashlib
 import random
 import asyncio
 import requests
 import websockets
-from nostr_sdk import (
-    Keys, EventBuilder, Tag, Kind, PublicKey
-)
+from nostr_sdk import Keys, PublicKey
 import sys
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -26,10 +26,7 @@ GLOBAL_RELAYS = [
     "wss://relay.snort.social",
     "wss://purplepag.es",
     "wss://nostr.wine",
-    "wss://relay.current.fyi",
-    "wss://nostr.bitcoiner.social",
-    "wss://relay.plebstr.com",
-    "wss://eden.nostr.land"
+    "wss://relay.current.fyi"
 ]
 
 DYNAMIC_CLOSINGS = [
@@ -87,9 +84,9 @@ async def fetch_user_meta_ws(pubkey_hex):
     for relay in GLOBAL_RELAYS[:3]:
         try:
             async with websockets.connect(relay, ping_interval=10, ping_timeout=10) as ws:
-                req_profile = json.dumps(["REQ", "meta", {"authors": [pubkey_hex], "kinds": [0, 1], "limit": 2}])
+                req_profile = json.dumps(["REQ", "meta", {"authors": [pubkey_hex], "kinds": [0, 1], "limit": 4}])
                 await ws.send(req_profile)
-                for _ in range(6):
+                for _ in range(8):
                     resp = await asyncio.wait_for(ws.recv(), timeout=3)
                     data = json.loads(resp)
                     if data[0] == "EVENT" and len(data) >= 3:
@@ -105,7 +102,7 @@ async def fetch_user_meta_ws(pubkey_hex):
                             last_post_id = ev.get("id")
                     elif data[0] == "EOSE":
                         break
-            if name or last_post_id:
+            if name and last_post_id:
                 break
         except Exception:
             continue
@@ -179,44 +176,39 @@ async def fetch_recent_zaps_ws():
             continue
     return events
 
-async def broadcast_event_builder(keys, builder):
-    """توقيع وبث الحدث لكافة الريليهات الـ 11 مباشرة"""
-    event = builder.to_unsigned_event(keys.public_key()).sign_with_keys(keys) if hasattr(builder, "to_unsigned_event") else None
+def create_and_sign_raw_event(keys, kind, content, tags):
+    pubkey = keys.public_key().to_hex()
+    created_at = int(time.time())
     
-    # تحويل الحدث لـ JSON وإرساله عبر WebSockets
-    if not event:
-        # بناء مباشر معتمد
-        import time, hashlib
-        pubkey = keys.public_key().to_hex()
-        created_at = int(time.time())
-        # استخراج المحتوى والتاغات من الـ builder
-        content = getattr(builder, "content", "") or ""
-        tags = []
-        raw_json = builder.as_json() if hasattr(builder, "as_json") else "{}"
-        b_data = json.loads(raw_json)
-        content = b_data.get("content", "")
-        tags = b_data.get("tags", [])
-        kind = b_data.get("kind", 1)
+    serialized = json.dumps([
+        0,
+        pubkey,
+        created_at,
+        kind,
+        tags,
+        content
+    ], separators=(',', ':'), ensure_ascii=False)
+    
+    event_id = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+    
+    try:
+        sig = keys.sign_schnorr(bytes.fromhex(event_id))
+    except Exception:
+        sig = keys.secret_key().sign_schnorr(bytes.fromhex(event_id))
 
-        serialized = json.dumps([0, pubkey, created_at, kind, tags, content], separators=(',', ':'), ensure_ascii=False)
-        event_id = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
-        try:
-            sig = keys.sign_schnorr(bytes.fromhex(event_id))
-        except Exception:
-            sig = keys.secret_key().sign_schnorr(bytes.fromhex(event_id))
-        
-        event_dict = {
-            "id": event_id,
-            "pubkey": pubkey,
-            "created_at": created_at,
-            "kind": kind,
-            "tags": tags,
-            "content": content,
-            "sig": sig.to_hex() if hasattr(sig, "to_hex") else str(sig)
-        }
-    else:
-        event_dict = json.loads(event.as_json())
+    sig_hex = sig.to_hex() if hasattr(sig, "to_hex") else str(sig)
 
+    return {
+        "id": event_id,
+        "pubkey": pubkey,
+        "created_at": created_at,
+        "kind": kind,
+        "tags": tags,
+        "content": content,
+        "sig": sig_hex
+    }
+
+async def broadcast_signed_event_ws(event_dict):
     msg = json.dumps(["EVENT", event_dict])
     for relay in GLOBAL_RELAYS:
         try:
@@ -269,16 +261,19 @@ async def run_single_cycle():
             continue
 
         event_to_reply = target_event_id or last_post_id
+        if not event_to_reply:
+            continue
 
         try:
-            # وسم NIP-10 الكامل للرد والإشعار الفوري
-            tags = [Tag.public_key(PublicKey.parse(sender_hex))]
-            if event_to_reply:
-                tags.append(Tag.parse(["e", event_to_reply, "", "root"]))
-                tags.append(Tag.parse(["e", event_to_reply, "", "reply"]))
+            # وسم الرد الرسمي الكامل NIP-10
+            tags = [
+                ["e", event_to_reply, "", "root"],
+                ["e", event_to_reply, "", "reply"],
+                ["p", sender_hex]
+            ]
 
-            builder = EventBuilder(Kind(1), reply_text).tags(tags)
-            await broadcast_event_builder(keys, builder)
+            signed_event = create_and_sign_raw_event(keys, 1, reply_text, tags)
+            await broadcast_signed_event_ws(signed_event)
 
             replies_sent += 1
             print(f"-> Published Public Reply #{replies_sent} to {user_name or 'Supporter'} [{sats or 'Active'} Sats]:")
