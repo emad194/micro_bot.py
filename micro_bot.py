@@ -1,13 +1,13 @@
 import os
 import re
 import json
-import time
-import hashlib
 import random
 import asyncio
 import requests
 import websockets
-from nostr_sdk import Keys, PublicKey
+from nostr_sdk import (
+    Keys, EventBuilder, Tag, Kind, PublicKey
+)
 import sys
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -19,11 +19,17 @@ MAX_REPLIES_PER_CYCLE = 6
 SLEEP_BETWEEN_CYCLES = 300
 
 GLOBAL_RELAYS = [
-    "wss://relay.nostr.band",
     "wss://relay.damus.io",
     "wss://nos.lol",
     "wss://relay.primal.net",
-    "wss://relay.snort.social"
+    "wss://relay.nostr.band",
+    "wss://relay.snort.social",
+    "wss://purplepag.es",
+    "wss://nostr.wine",
+    "wss://relay.current.fyi",
+    "wss://nostr.bitcoiner.social",
+    "wss://relay.plebstr.com",
+    "wss://eden.nostr.land"
 ]
 
 DYNAMIC_CLOSINGS = [
@@ -75,49 +81,58 @@ def extract_zap_data(event_data):
 
     return sender_pubkey, target_event_id, sats_amount
 
-async def fetch_user_name_ws(pubkey_hex):
-    for relay in GLOBAL_RELAYS[:2]:
+async def fetch_user_meta_ws(pubkey_hex):
+    name = None
+    last_post_id = None
+    for relay in GLOBAL_RELAYS[:3]:
         try:
             async with websockets.connect(relay, ping_interval=10, ping_timeout=10) as ws:
-                req = json.dumps(["REQ", "get_name", {"authors": [pubkey_hex], "kinds": [0], "limit": 1}])
-                await ws.send(req)
-                for _ in range(5):
+                req_profile = json.dumps(["REQ", "meta", {"authors": [pubkey_hex], "kinds": [0, 1], "limit": 2}])
+                await ws.send(req_profile)
+                for _ in range(6):
                     resp = await asyncio.wait_for(ws.recv(), timeout=3)
                     data = json.loads(resp)
                     if data[0] == "EVENT" and len(data) >= 3:
-                        content = json.loads(data[2].get("content", "{}"))
-                        name = content.get("display_name") or content.get("name")
-                        if name and len(name.strip()) > 0:
-                            clean_name = re.sub(r'[^\w\s]', '', name).strip()
-                            if clean_name:
-                                return clean_name.split()[0]
+                        ev = data[2]
+                        if ev.get("kind") == 0 and not name:
+                            content = json.loads(ev.get("content", "{}"))
+                            name_val = content.get("display_name") or content.get("name")
+                            if name_val and len(name_val.strip()) > 0:
+                                clean = re.sub(r'[^\w\s]', '', name_val).strip()
+                                if clean:
+                                    name = clean.split()[0]
+                        elif ev.get("kind") == 1 and not last_post_id:
+                            last_post_id = ev.get("id")
                     elif data[0] == "EOSE":
                         break
+            if name or last_post_id:
+                break
         except Exception:
             continue
-    return None
+    return name, last_post_id
 
 def generate_personalized_reply(sats_amount, user_name=None):
     greeting = f"Hi {user_name}," if user_name else "Hi,"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     
-    amount_hint = f"They are an active supporter who zaps community creators on Nostr (around {sats_amount} sats)." if sats_amount else "They are active in supporting community creators with zaps on Nostr."
+    amount_hint = f"They are an active supporter who frequently zaps community creators on Nostr (around {sats_amount} sats)." if sats_amount else "They are active in supporting community creators with zaps on Nostr."
     
     system_instruction = (
         "You are an authentic person surviving the hardships in Gaza, writing a warm, respectful public reply to a generous supporter on Nostr.\n\n"
         "TASK:\n"
-        "Write exactly ONE sincere, natural sentence appreciating their generous warmth and active support/zaps across the Nostr community, while gently introducing your family's reality in Gaza.\n\n"
+        "Write exactly ONE sincere, natural sentence appreciating their generous warmth and active support/zaps across the Nostr community, while gently introducing your family's daily reality in Gaza with dignity.\n\n"
         "RULES:\n"
-        "1. Do NOT imply they zapped you directly.\n"
-        "2. Do NOT include greetings or links/closings (added automatically).\n"
-        "3. Write in fluent, clean English."
+        "1. Do NOT imply they zapped you directly (they zapped creators across Nostr).\n"
+        "2. Do NOT include greetings (like Hi, Hello) or closings/links (added automatically).\n"
+        "3. Sound completely human, humble, and authentic.\n"
+        "4. Write in clean, fluent English."
     )
 
     payload = {
         "model": "deepseek-chat",
         "messages": [
             {"role": "system", "content": system_instruction},
-            {"role": "user", "content": f"Context: {amount_hint}. Write the sentence."}
+            {"role": "user", "content": f"Context: {amount_hint}. Write the single sentence."}
         ],
         "temperature": 0.8
     }
@@ -141,7 +156,7 @@ def generate_personalized_reply(sats_amount, user_name=None):
 async def fetch_recent_zaps_ws():
     events = []
     seen_ids = set()
-    for relay in GLOBAL_RELAYS:
+    for relay in GLOBAL_RELAYS[:5]:
         try:
             async with websockets.connect(relay, ping_interval=10, ping_timeout=10) as ws:
                 req = json.dumps(["REQ", "zaps_sub", {"kinds": [9735], "limit": 60}])
@@ -164,50 +179,55 @@ async def fetch_recent_zaps_ws():
             continue
     return events
 
-def create_and_sign_event(keys, kind, content, tags):
-    pubkey = keys.public_key().to_hex()
-    created_at = int(time.time())
+async def broadcast_event_builder(keys, builder):
+    """توقيع وبث الحدث لكافة الريليهات الـ 11 مباشرة"""
+    event = builder.to_unsigned_event(keys.public_key()).sign_with_keys(keys) if hasattr(builder, "to_unsigned_event") else None
     
-    serialized = json.dumps([
-        0,
-        pubkey,
-        created_at,
-        kind,
-        tags,
-        content
-    ], separators=(',', ':'), ensure_ascii=False)
-    
-    event_id = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
-    
-    try:
-        sig = keys.sign_schnorr(bytes.fromhex(event_id))
-    except Exception:
-        sig = keys.secret_key().sign_schnorr(bytes.fromhex(event_id))
+    # تحويل الحدث لـ JSON وإرساله عبر WebSockets
+    if not event:
+        # بناء مباشر معتمد
+        import time, hashlib
+        pubkey = keys.public_key().to_hex()
+        created_at = int(time.time())
+        # استخراج المحتوى والتاغات من الـ builder
+        content = getattr(builder, "content", "") or ""
+        tags = []
+        raw_json = builder.as_json() if hasattr(builder, "as_json") else "{}"
+        b_data = json.loads(raw_json)
+        content = b_data.get("content", "")
+        tags = b_data.get("tags", [])
+        kind = b_data.get("kind", 1)
 
-    sig_hex = sig.to_hex() if hasattr(sig, "to_hex") else str(sig)
+        serialized = json.dumps([0, pubkey, created_at, kind, tags, content], separators=(',', ':'), ensure_ascii=False)
+        event_id = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+        try:
+            sig = keys.sign_schnorr(bytes.fromhex(event_id))
+        except Exception:
+            sig = keys.secret_key().sign_schnorr(bytes.fromhex(event_id))
+        
+        event_dict = {
+            "id": event_id,
+            "pubkey": pubkey,
+            "created_at": created_at,
+            "kind": kind,
+            "tags": tags,
+            "content": content,
+            "sig": sig.to_hex() if hasattr(sig, "to_hex") else str(sig)
+        }
+    else:
+        event_dict = json.loads(event.as_json())
 
-    return {
-        "id": event_id,
-        "pubkey": pubkey,
-        "created_at": created_at,
-        "kind": kind,
-        "tags": tags,
-        "content": content,
-        "sig": sig_hex
-    }
-
-async def broadcast_signed_event_ws(event_dict):
     msg = json.dumps(["EVENT", event_dict])
     for relay in GLOBAL_RELAYS:
         try:
-            async with websockets.connect(relay, ping_interval=5, ping_timeout=5) as ws:
+            async with websockets.connect(relay, ping_interval=4, ping_timeout=4) as ws:
                 await ws.send(msg)
         except Exception:
             pass
 
 async def run_single_cycle():
     if not NOSTR_SECRET or not DEEPSEEK_API_KEY:
-        print("Error: Missing secrets (NOSTR_NSEC or DEEPSEEK_API_KEY).")
+        print("Error: Missing secrets in GitHub.")
         return
 
     try:
@@ -243,37 +263,38 @@ async def run_single_cycle():
 
         seen_senders.add(sender_hex)
 
-        user_name = await fetch_user_name_ws(sender_hex)
+        user_name, last_post_id = await fetch_user_meta_ws(sender_hex)
         reply_text = await asyncio.to_thread(generate_personalized_reply, sats, user_name)
         if not reply_text:
             continue
 
+        event_to_reply = target_event_id or last_post_id
+
         try:
-            # تجهيز التاغات لنشر رد علني (Kind 1)
-            tags = [["p", sender_hex]]
-            if target_event_id:
-                tags.append(["e", target_event_id, "", "root"])
+            # وسم NIP-10 الكامل للرد والإشعار الفوري
+            tags = [Tag.public_key(PublicKey.parse(sender_hex))]
+            if event_to_reply:
+                tags.append(Tag.parse(["e", event_to_reply, "", "root"]))
+                tags.append(Tag.parse(["e", event_to_reply, "", "reply"]))
 
-            # توقيع حدث Kind 1 علني
-            signed_event_dict = create_and_sign_event(keys, 1, reply_text, tags)
-
-            await broadcast_signed_event_ws(signed_event_dict)
+            builder = EventBuilder(Kind(1), reply_text).tags(tags)
+            await broadcast_event_builder(keys, builder)
 
             replies_sent += 1
             print(f"-> Published Public Reply #{replies_sent} to {user_name or 'Supporter'} [{sats or 'Active'} Sats]:")
             print(f"\"{reply_text}\"\n" + "-"*50)
 
             if replies_sent < MAX_REPLIES_PER_CYCLE:
-                wait_secs = random.randint(12, 25)
+                wait_secs = random.randint(8, 15)
                 await asyncio.sleep(wait_secs)
 
         except Exception as send_err:
             print(f"Notice publishing reply: {send_err}")
 
-    print(f"Cycle finished: Published {replies_sent} public replies.")
+    print(f"Cycle finished: Published {replies_sent} public replies across all relays.")
 
 async def main():
-    print("Starting Nostr Public Reply Engine...")
+    print("Starting Nostr Targeted Public Reply Engine...")
     max_cycles = 60
     current_cycle = 0
 
@@ -286,7 +307,7 @@ async def main():
             print(f"Error in cycle execution: {e}")
 
         if current_cycle < max_cycles:
-            print(f"Sleeping for {SLEEP_BETWEEN_CYCLES}s before next scan...")
+            print(f"Waiting 5 minutes ({SLEEP_BETWEEN_CYCLES}s) before next scan...")
             await asyncio.sleep(SLEEP_BETWEEN_CYCLES)
 
 if __name__ == "__main__":
