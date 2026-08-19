@@ -5,7 +5,10 @@ import random
 import asyncio
 import requests
 import websockets
-from nostr_sdk import Keys, EventBuilder, PublicKey, Client
+from nostr_sdk import (
+    Keys, EventBuilder, PublicKey, Client, Kind, Tag,
+    nip04_encrypt
+)
 import sys
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -170,7 +173,6 @@ async def run_single_cycle():
         print(f"Error parsing keys: {e}")
         return
 
-    # إنشاء Client بدون معاملات
     client = Client()
     for r in GLOBAL_RELAYS:
         try:
@@ -219,13 +221,14 @@ async def run_single_cycle():
             continue
 
         try:
-            # بناء وتوقيع الحدث المشفر بالمفاتيح ثم إرساله
-            builder = EventBuilder.encrypted_direct_msg(keys, target_pk, dm_text)
-            try:
-                event_to_send = builder.to_event(keys)
-                await asyncio.wait_for(client.send_event(event_to_send), timeout=12)
-            except Exception:
-                await asyncio.wait_for(client.send_event_builder(builder), timeout=12)
+            # تشفير الرسالة NIP-04 وإرسال حدث Kind 4 المعتمد
+            secret_key = keys.secret_key()
+            encrypted_payload = nip04_encrypt(secret_key, target_pk, dm_text)
+            
+            p_tag = Tag.parse(["p", target_pk.to_hex()])
+            event = EventBuilder(Kind(4), encrypted_payload, [p_tag]).to_event(keys)
+            
+            await asyncio.wait_for(client.send_event(event), timeout=12)
 
             dms_sent += 1
             npub_short = target_pk.to_bech32()[:14] + "..."
