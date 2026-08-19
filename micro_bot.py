@@ -7,7 +7,7 @@ import requests
 import websockets
 from nostr_sdk import (
     Keys, EventBuilder, PublicKey, Client, Kind, Tag,
-    nip04_encrypt
+    NostrSigner, nip04_encrypt
 )
 import sys
 
@@ -169,11 +169,12 @@ async def run_single_cycle():
 
     try:
         keys = Keys.parse(NOSTR_SECRET)
+        signer = NostrSigner.keys(keys)
     except Exception as e:
         print(f"Error parsing keys: {e}")
         return
 
-    client = Client()
+    client = Client(signer)
     for r in GLOBAL_RELAYS:
         try:
             await client.add_relay(r)
@@ -221,15 +222,14 @@ async def run_single_cycle():
             continue
 
         try:
-            # تشفير NIP-04 وإرفاق الـ Tag بشكل صحيح
+            # تشفير وبناء الرسالة المشفرة NIP-04 وإرسالها عبر العميل الموثق
             secret_key = keys.secret_key()
             encrypted_payload = nip04_encrypt(secret_key, target_pk, dm_text)
             
             p_tag = Tag.public_key(target_pk)
             builder = EventBuilder(Kind(4), encrypted_payload).tags([p_tag])
-            event = builder.to_event(keys)
             
-            await asyncio.wait_for(client.send_event(event), timeout=12)
+            await asyncio.wait_for(client.send_event_builder(builder), timeout=12)
 
             dms_sent += 1
             npub_short = target_pk.to_bech32()[:14] + "..."
