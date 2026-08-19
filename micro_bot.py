@@ -59,8 +59,7 @@ def parse_bolt11_sats(bolt11_invoice):
                 else:
                     break
             if num_str:
-                val = int(num_str)
-                return val
+                return int(num_str)
     except Exception:
         pass
     return None
@@ -94,7 +93,7 @@ def extract_zap_sender(event):
 async def fetch_user_name(client, pubkey_hex):
     try:
         f = Filter().author(PublicKey.parse(pubkey_hex)).kind(Kind(0)).limit(1)
-        events = await client.fetch_events_from(GLOBAL_RELAYS, f, timedelta(seconds=4))
+        events = await client.fetch_events([f], timedelta(seconds=4))
         ev_list = events.to_vec() if hasattr(events, "to_vec") else list(events)
         
         if ev_list:
@@ -154,7 +153,7 @@ async def fetch_previously_messaged(client, bot_pk):
     messaged = set()
     try:
         dm_filter = Filter().author(bot_pk).kind(Kind(4)).limit(300)
-        events = await client.fetch_events_from(GLOBAL_RELAYS, dm_filter, timedelta(seconds=8))
+        events = await client.fetch_events([dm_filter], timedelta(seconds=8))
         ev_list = events.to_vec() if hasattr(events, "to_vec") else list(events)
         for ev in ev_list:
             tags = get_event_tags_list(ev)
@@ -177,7 +176,6 @@ async def run_single_cycle():
         print(f"Error parsing keys: {e}")
         return
 
-    # تمرير المفاتيح مباشرة للعميل لتفادي خطأ NostrSigner
     try:
         client = Client(keys)
     except Exception:
@@ -202,7 +200,7 @@ async def run_single_cycle():
     zap_filter = Filter().kind(Kind(9735)).limit(150)
     
     try:
-        events = await client.fetch_events_from(GLOBAL_RELAYS, zap_filter, timedelta(seconds=12))
+        events = await client.fetch_events([zap_filter], timedelta(seconds=12))
         ev_list = events.to_vec() if hasattr(events, "to_vec") else list(events)
     except Exception as e:
         print(f"Error fetching zap events: {e}")
@@ -243,7 +241,6 @@ async def run_single_cycle():
             continue
 
         try:
-            # تشفير وإرسال الرسالة المشفرة
             builder = EventBuilder.encrypted_direct_msg(keys, target_pk, dm_text)
             await asyncio.wait_for(client.send_event_builder(builder), timeout=12)
 
