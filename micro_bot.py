@@ -16,6 +16,9 @@ sys.stdout.reconfigure(line_buffering=True)
 NOSTR_SECRET = os.getenv("NOSTR_NSEC", "").strip()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 
+# رابط الصورة المباشر
+IMAGE_URL = "https://i.postimg.cc/1zv9VTqN/altqaaat.png"
+
 # تسريع الدورة وتقليل فترات الانتظار
 MAX_REPLIES_PER_CYCLE = 15
 SLEEP_BETWEEN_CYCLES = 25  # راحة 25 ثانية فقط بين كل دورة فحص
@@ -33,11 +36,11 @@ GLOBAL_RELAYS = [
 ]
 
 DYNAMIC_CLOSINGS = [
-    "🕊️ You can check our daily survival story & updates pinned at the top of my profile if you feel led to read.",
-    "🤍 We document our family's raw reality in Gaza on my pinned post if you'd like to take a look.",
-    "✨ Our personal journey of resilience is pinned on my profile—any zap or share helps us survive.",
-    "🌱 Quietly sharing our daily life amidst the ruins on my pinned note if you ever want to check.",
-    "🍉 If you have a moment, our story and campaign are pinned at the top of my page. Warm regards."
+    f"🕊️ You can check our daily survival story & updates pinned at the top of my profile if you feel led to read.\n\n{IMAGE_URL}",
+    f"🤍 We document our family's raw reality in Gaza on my pinned post if you'd like to take a look.\n\n{IMAGE_URL}",
+    f"✨ Our personal journey of resilience is pinned on my profile—any zap or share helps us survive.\n\n{IMAGE_URL}",
+    f"🌱 Quietly sharing our daily life amidst the ruins on my pinned note if you ever want to check.\n\n{IMAGE_URL}",
+    f"🍉 If you have a moment, our story and campaign are pinned at the top of my page. Warm regards.\n\n{IMAGE_URL}"
 ]
 
 def parse_bolt11_sats(bolt11_invoice):
@@ -164,9 +167,10 @@ def generate_personalized_reply(sats_amount, user_name=None):
     except Exception:
         pass
 
+    closing = random.choice(DYNAMIC_CLOSINGS)
     return (
         f"{greeting} Seeing your generous warmth across Nostr brings genuine hope to our family amidst the ongoing hardships in Gaza.\n\n"
-        f"{random.choice(DYNAMIC_CLOSINGS)}"
+        f"{closing}"
     )
 
 async def fetch_recent_zaps_fast():
@@ -271,7 +275,8 @@ async def run_single_cycle():
             tags = [
                 ["e", event_to_reply, "", "root"],
                 ["e", event_to_reply, "", "reply"],
-                ["p", sender_hex]
+                ["p", sender_hex],
+                ["r", IMAGE_URL]  # وسوم الصورة لعرض المعاينة التلقائية في نوستر
             ]
 
             signed_event = create_and_sign_raw_event(keys, 1, reply_text, tags)
@@ -293,7 +298,7 @@ async def run_single_cycle():
     print(f"Cycle completed: {replies_sent} replies published.")
 
 async def main():
-    print("Starting Turbo Nostr Engagement Engine...")
+    print("Starting Turbo Nostr Engagement Engine with Image Support...")
     cycle = 0
     while True:
         cycle += 1
