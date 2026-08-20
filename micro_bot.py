@@ -273,7 +273,7 @@ async def run_cycle(keys):
 
             # متوافق مع nostr-sdk 0.45.x
             builder = EventBuilder(Kind(1), reply_content).tags(tags)
-            signed_event = builder.to_event(keys)
+            signed_event = builder.sign_with_keys(keys)
             event_json = json.loads(signed_event.as_json())
 
             await broadcast_signed_event(event_json)
