@@ -5,9 +5,10 @@ import time
 import random
 import asyncio
 import sqlite3
+import hashlib
 import requests
 import websockets
-from nostr_sdk import Keys, EventBuilder, Tag, Kind
+from nostr_sdk import Keys
 import sys
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -227,6 +228,30 @@ async def fetch_recent_zaps():
                     events.append(ev)
     return events
 
+# ==================== التوقيع القياسي المتوافق ====================
+def sign_raw_event(keys, kind, content, tags):
+    pubkey = keys.public_key().to_hex()
+    created_at = int(time.time())
+    serialized = json.dumps([0, pubkey, created_at, kind, tags, content], separators=(',', ':'), ensure_ascii=False)
+    event_id = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+    
+    # توقيع موثوق متوافق مع كافة نسخ nostr_sdk
+    try:
+        sig = keys.sign_schnorr(bytes.fromhex(event_id))
+    except Exception:
+        sig = keys.secret_key().sign_schnorr(bytes.fromhex(event_id))
+
+    sig_hex = sig.to_hex() if hasattr(sig, "to_hex") else str(sig)
+    return {
+        "id": event_id,
+        "pubkey": pubkey,
+        "created_at": created_at,
+        "kind": kind,
+        "tags": tags,
+        "content": content,
+        "sig": sig_hex
+    }
+
 async def broadcast_signed_event(event_dict):
     msg = json.dumps(["EVENT", event_dict])
     async def send(r):
@@ -266,21 +291,19 @@ async def run_cycle(keys):
             continue
 
         try:
+            # وسوم NIP-10 القياسية للظهور داخل الثريد
             tags = [
-                Tag.parse(["e", target_post, "", "root"]),
-                Tag.parse(["p", sender_hex])
+                ["e", target_post, "", "root"],
+                ["p", sender_hex]
             ]
 
-            # متوافق مع nostr-sdk 0.45.x
-            builder = EventBuilder(Kind(1), reply_content).tags(tags)
-            signed_event = builder.sign_with_keys(keys)
-            event_json = json.loads(signed_event.as_json())
+            signed_event = sign_raw_event(keys, 1, reply_content, tags)
 
-            await broadcast_signed_event(event_json)
+            await broadcast_signed_event(signed_event)
             record_interaction(sender_hex, target_post)
             replied += 1
 
-            print(f"\n[✓] Published Reply #{replied} to @{user_name or sender_hex[:8]} [{sats or 'Active'} Sats]")
+            print(f"\n[✓] Published Reply #{replied} inside thread of @{user_name or sender_hex[:8]} [{sats or 'Active'} Sats]")
             await asyncio.sleep(random.uniform(2.5, 4.5))
 
         except Exception as err:
