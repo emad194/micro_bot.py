@@ -1,6 +1,3 @@
-إليك الكود المحدث بالكامل مع إضافة رابط الصورة المباشر إلى نصوص `DYNAMIC_CLOSINGS` فقط دون تعديل أي شيء في الوسوم أو المنطق البرمجي، ليعمل بسرعة وبدون أي أخطاء:
-
-```python
 import os
 import re
 import json
@@ -19,12 +16,10 @@ sys.stdout.reconfigure(line_buffering=True)
 NOSTR_SECRET = os.getenv("NOSTR_NSEC", "").strip()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 
-# رابط الصورة المباشر
 IMAGE_URL = "https://i.postimg.cc/1zv9VTqN/altqaaat.png"
 
-# تسريع الدورة وتقليل فترات الانتظار
 MAX_REPLIES_PER_CYCLE = 15
-SLEEP_BETWEEN_CYCLES = 25  # راحة 25 ثانية فقط بين كل دورة فحص
+SLEEP_BETWEEN_CYCLES = 25
 
 GLOBAL_SEEN_SENDERS = set()
 GLOBAL_REPLIED_EVENTS = set()
@@ -291,7 +286,6 @@ async def run_single_cycle():
             print(f"-> Published Public Reply #{replies_sent} to {user_name or 'Supporter'} [{sats or 'Active'} Sats]")
             print(f"\"{reply_text}\"\n" + "-"*50)
 
-            # فاصل زمني سريع جداً (ثانية إلى ثانيتين فقط)
             await asyncio.sleep(random.uniform(1.0, 2.0))
 
         except Exception as send_err:
@@ -315,5 +309,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-```
