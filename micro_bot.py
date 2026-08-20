@@ -7,7 +7,7 @@ import asyncio
 import sqlite3
 import requests
 import websockets
-from nostr_sdk import Keys, EventBuilder, Tag
+from nostr_sdk import Keys, EventBuilder, Tag, Kind
 import sys
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -125,7 +125,6 @@ async def query_user_meta(relay, pubkey_hex):
     name, post_id = None, None
     try:
         async with websockets.connect(relay, ping_interval=2, ping_timeout=2, open_timeout=2) as ws:
-            # زيادة الحد لجلب آخر منشور فعلي
             req = json.dumps(["REQ", "u_meta", {"authors": [pubkey_hex], "kinds": [0, 1], "limit": 10}])
             await ws.send(req)
             for _ in range(12):
@@ -200,7 +199,6 @@ def generate_personalized_reply(sats_amount, user_name=None):
 async def fetch_recent_zaps():
     seen_ids = set()
     events = []
-    # جلب زابات آخر 24 ساعة لضمان وجود متفاعلين جدد
     since_timestamp = int(time.time()) - (24 * 3600)
 
     async def get_zaps(relay):
@@ -259,7 +257,6 @@ async def run_cycle(keys):
             continue
 
         user_name, last_post_id = await fetch_user_meta_fast(sender_hex)
-        # إذا لم يكن له منشور نرد على المنشور الأصلي الذي قام بعمل زاب عليه لضمان عدم تفويته
         target_post = last_post_id or target_event_id
         if not target_post:
             continue
@@ -274,7 +271,8 @@ async def run_cycle(keys):
                 Tag.parse(["p", sender_hex])
             ]
 
-            builder = EventBuilder.text_note(reply_content, tags)
+            # متوافق بالكامل مع nostr-sdk 0.45.x
+            builder = EventBuilder(Kind(1), reply_content, tags)
             signed_event = builder.to_event(keys)
             event_json = json.loads(signed_event.as_json())
 
