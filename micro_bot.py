@@ -20,7 +20,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 IMAGE_URL = "https://i.postimg.cc/1zv9VTqN/altqaaat.png"
 
 MAX_REPLIES_PER_CYCLE = 10
-SLEEP_BETWEEN_CYCLES = 20
+SLEEP_BETWEEN_CYCLES = 45
 DB_NAME = "nostr_replies.db"
 
 GLOBAL_RELAYS = [
@@ -200,14 +200,14 @@ def generate_personalized_reply(sats_amount, user_name=None):
 async def fetch_recent_zaps():
     seen_ids = set()
     events = []
-    since_timestamp = int(time.time()) - (24 * 3600)
 
     async def get_zaps(relay):
         local_evs = []
         try:
             async with websockets.connect(relay, ping_interval=2, ping_timeout=2, open_timeout=2) as ws:
-                await ws.send(json.dumps(["REQ", "sub_zap", {"kinds": [9735], "since": since_timestamp, "limit": 100}]))
-                for _ in range(40):
+                # جلب شريحة أوسع (400 زاب حية) بدون قيد زمني يعلق على نفس الأحداث القديمة
+                await ws.send(json.dumps(["REQ", "sub_zap", {"kinds": [9735], "limit": 400}]))
+                for _ in range(50):
                     resp = await asyncio.wait_for(ws.recv(), timeout=1.0)
                     data = json.loads(resp)
                     if data[0] == "EVENT" and len(data) >= 3:
@@ -235,7 +235,6 @@ def sign_raw_event(keys, kind, content, tags):
     serialized = json.dumps([0, pubkey, created_at, kind, tags, content], separators=(',', ':'), ensure_ascii=False)
     event_id = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
     
-    # توقيع موثوق متوافق مع كافة نسخ nostr_sdk
     try:
         sig = keys.sign_schnorr(bytes.fromhex(event_id))
     except Exception:
@@ -264,7 +263,7 @@ async def broadcast_signed_event(event_dict):
 
 async def run_cycle(keys):
     bot_hex = keys.public_key().to_hex().lower()
-    print("[*] Fetching fresh live Zaps across Nostr network...")
+    print("[*] Fetching live fresh Zaps across Nostr network...")
     events = await fetch_recent_zaps()
     print(f"[*] Retrieved {len(events)} total zaps.")
 
@@ -291,7 +290,6 @@ async def run_cycle(keys):
             continue
 
         try:
-            # وسوم NIP-10 القياسية للظهور داخل الثريد
             tags = [
                 ["e", target_post, "", "root"],
                 ["p", sender_hex]
