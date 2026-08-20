@@ -271,8 +271,8 @@ async def run_cycle(keys):
                 Tag.parse(["p", sender_hex])
             ]
 
-            # متوافق بالكامل مع nostr-sdk 0.45.x
-            builder = EventBuilder(Kind(1), reply_content, tags)
+            # متوافق مع nostr-sdk 0.45.x
+            builder = EventBuilder(Kind(1), reply_content).tags(tags)
             signed_event = builder.to_event(keys)
             event_json = json.loads(signed_event.as_json())
 
